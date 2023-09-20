@@ -1,0 +1,54 @@
+[package]
+name = 'email-validate'
+version = '0.1.0'
+edition = '2021'
+keywords = ['email', 'validation', 'validate', 'bounce', 'free']
+categories = ['email', 'validation']
+description = 'free multithreaded email validation CLI, improving your email delivery'
+repository = "https://github.com/beckend/email-validate-rs"
+license = "AGPL-3.0"
+exclude = [
+  '.cargo/*',
+  '.github/*',
+  '.vscode/*',
+  '.clippy.toml',
+  '.rustfmt.toml',
+  '.tool-versions',
+  'Makefile.toml',
+]
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = '1.0.75'
+check-if-email-exists = '0.9.0'
+clap = { version = '4.4.4', features = ['derive', 'unicode', 'wrap_help'] }
+coarsetime = '0.1.27'
+colored = '2.0.4'
+cowstr = { version = '1.2.0', features = ['serde'] }
+crossterm = { version = '0.27.0', features = ['event-stream'] }
+dashmap = { version = '5.5.3', features = ['serde'] }
+dirs = '5.0.1'
+futures = { version = '0.3.28', features = ['thread-pool'] }
+humantime = '2.1.0'
+kanal = '0.1.0-pre8'
+minstant = '0.1.3'
+once_cell = '1.18.0'
+path-clean = '1.0.1'
+ratatui = '0.23.0'
+serde = { version = '1.0.188', features = ['derive'] }
+serde_json = { version = '1.0.107', features = ['preserve_order'] }
+serde_variant = '0.1.2'
+slog = { version = '2.7.0', features = ['dynamic-keys'] }
+slog-async = { version = '2.8.0', features = ['dynamic-keys'] }
+slog-term = '2.9.0'
+tempfile = { version = '3.8.0', optional = true }
+thiserror = '1.0.48'
+tokio = { version = '1.32.0', features = ['full'] }
+typed-builder = '0.16.1'
+walkdir = '2.4.0'
+
+[features]
+tests_integration = ['dep:tempfile']
+all = ['tests_integration']

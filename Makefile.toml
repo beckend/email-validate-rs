@@ -1,0 +1,11 @@
+[tasks.dev]
+command = 'watchexec'
+args = ['-r', 'cargo', 'run', '-- check --help']
+
+[tasks.test-watch]
+command = 'watchexec'
+args = ['-r', 'cargo', 'test', '--features', 'all', '-- --nocapture']
+
+[tasks.test-watch-unit]
+command = 'watchexec'
+args = ['-r', 'cargo', 'test', '--features', 'tests_unit', '-- --nocapture']

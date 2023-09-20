@@ -1,0 +1,9 @@
+# https://doc.rust-lang.org/nightly/clippy/lints.html
+
+#![warn(clippy::pedantic)]
+#![forbid(clippy::correctness)]
+#![warn(clippy::suspicious)]
+#![warn(clippy::complexity)]
+#![warn(clippy::perf)]
+#![warn(clippy::style)]
+#![warn(clippy::cargo)]

@@ -1,0 +1,58 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/cache@v3
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            /home/runner/.cache/sccache/
+            ~/.cache/sccache/
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+      - uses: mozilla-actions/sccache-action@v0.0.3
+      - uses: actions/checkout@v3
+      - uses: rui314/setup-mold@v1
+        with:
+          mold-version: 2.1.0
+      - name: Build
+        run: cargo build --release
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/cache@v3
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            /home/runner/.cache/sccache/
+            ~/.cache/sccache/
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+      - uses: mozilla-actions/sccache-action@v0.0.3
+      - uses: actions/checkout@v3
+      - uses: rui314/setup-mold@v1
+        with:
+          mold-version: 2.1.0
+      - name: Run tests
+        run: CI=true cargo test --features all
+
