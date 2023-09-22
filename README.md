@@ -1,3 +1,4 @@
+[![version](https://img.shields.io/crates/v/email-validate)](https://crates.io/crates/email-validate)
 [![Rust](https://github.com/beckend/email-validate-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/beckend/email-validate-rs/actions/workflows/rust.yml)
 [![minimum rustc version](https://img.shields.io/badge/rustc-1.72-orange.svg)](https://github.com/beckend/email-validate-rs)
 
