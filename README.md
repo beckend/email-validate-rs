@@ -52,6 +52,7 @@ Options:
   -V, --version                            Print version
 ```
 
+`--file-input` may be repeat for multiple files.
 Hitting Esc/CTRL+C/q will abort quit the CLI progress.
 The output will be a TUI progress screen identical like the subcommand `check-dir`.
 
