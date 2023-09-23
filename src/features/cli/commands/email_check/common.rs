@@ -492,7 +492,6 @@ impl Api {
       .expect("send update report files written.")
     }
 
-    println!("happens");
     Ok(())
   }
 
