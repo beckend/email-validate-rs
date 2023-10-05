@@ -14,7 +14,6 @@ impl Command {
       dir_output: options.dir_output.clone(),
       concurrency: options.concurrency,
       timeout_seconds: options.timeout_seconds,
-      names_email_role_based: options.names_email_role_based.clone(),
     };
 
     let files_paths = options

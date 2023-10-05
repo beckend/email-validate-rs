@@ -12,7 +12,6 @@ async fn cli_command_check_string() -> Result<()> {
     input: "a@b.c;ldddad@tja.coi;dsada@gmail.com;ojs@l.o".into(),
     concurrency: 100,
     timeout_seconds: 10,
-    names_email_role_based: None,
   })
   .await
   .unwrap();

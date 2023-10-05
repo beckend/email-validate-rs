@@ -26,7 +26,7 @@ use crate::{
   },
   model::INFALLIBLE,
   modules::{
-    email_check::{EmailCheck, EmailCheckIsValid, OptionsIsValid},
+    email_check::{EmailCheck, EmailCheckIsValid},
     fs::write::FileWriter,
     logger::Logger,
   },
@@ -113,7 +113,6 @@ impl Api {
     state: Arc<RwLock<Option<SingleFile<'_>>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
     timeout_seconds: u64,
-    names_email_role_based: Option<Vec<CowStr>>,
   ) -> Result<()> {
     let fut = {
       let state = state.clone();
@@ -124,13 +123,7 @@ impl Api {
         let sender_update = sender_update_c;
         let t_start = minstant::Instant::now();
         let t: &str = email_address.as_ref();
-        let (result, _) = EmailCheck::check_single(
-          t,
-          &OptionsIsValid {
-            names_email_role_based,
-          },
-        )
-        .await?;
+        let (result, _) = EmailCheck::check_single(t).await?;
 
         let mut lock = state.write().await;
         let state = lock.as_mut().expect("singlefile");
@@ -197,7 +190,6 @@ impl Api {
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
     timeout_seconds: u64,
     concurrency: usize,
-    names_email_role_based: Option<Vec<CowStr>>,
   ) -> Result<()> {
     let mut s_lock = state.write().await;
     if s_lock.as_ref().expect("singlefile").items.is_none() {
@@ -212,19 +204,9 @@ impl Api {
       .map(|x| {
         let state = state.clone();
         let sender_update = sender_update.clone();
-        let names_email_role_based = names_email_role_based.clone();
 
         tokio::spawn({
-          async move {
-            Self::process_single_item(
-              x,
-              state,
-              sender_update,
-              timeout_seconds,
-              names_email_role_based,
-            )
-            .await
-          }
+          async move { Self::process_single_item(x, state, sender_update, timeout_seconds).await }
         })
       })
       .buffer_unordered(concurrency)
@@ -248,7 +230,6 @@ impl Api {
       sender_update.clone(),
       options.timeout_seconds,
       options.concurrency,
-      options.names_email_role_based.clone(),
     )
     .await?;
     Self::write_output_files(sender_update, options, state, path_file).await?;
