@@ -26,6 +26,7 @@ async fn cli_command_check_dir() -> Result<()> {
     dir_output: Cow::from(path_output),
     concurrency: 100,
     timeout_seconds: 10,
+    names_email_role_based: None,
   })
   .await
   .unwrap();
