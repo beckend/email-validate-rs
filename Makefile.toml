@@ -1,6 +1,6 @@
 [tasks.dev]
 command = 'watchexec'
-args = ['-r', 'cargo', 'run', '-- check --help']
+args = ['-r', 'cargo', 'run', '-- check-string --help']
 
 [tasks.test-watch]
 command = 'watchexec'

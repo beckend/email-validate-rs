@@ -22,6 +22,8 @@ pub struct CommandCheckDirOptions {
     value_parser = Parsers::parse_duration_above_0
   )]
   pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub names_email_role_based: Option<Vec<CowStr>>,
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
@@ -41,6 +43,8 @@ pub struct CommandCheckFileOptions {
     value_parser = Parsers::parse_duration_above_0
   )]
   pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub names_email_role_based: Option<Vec<CowStr>>,
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
@@ -57,6 +61,8 @@ pub struct CommandCheckStringOptions {
     value_parser = Parsers::parse_duration_above_0
   )]
   pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub names_email_role_based: Option<Vec<CowStr>>,
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]

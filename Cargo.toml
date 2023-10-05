@@ -34,7 +34,7 @@ futures = { version = '0.3.28', features = ['thread-pool'] }
 humantime = '2.1.0'
 kanal = '0.1.0-pre8'
 minstant = '0.1.3'
-once_cell = '1.18.0'
+once_cell = "1.18.0"
 path-clean = '1.0.1'
 ratatui = '0.23.0'
 serde = { version = '1.0.188', features = ['derive'] }

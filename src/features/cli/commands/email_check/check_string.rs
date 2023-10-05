@@ -32,6 +32,7 @@ impl Command {
       None,
       options.timeout_seconds,
       options.concurrency,
+      options.names_email_role_based.clone(),
     )
     .await?;
 
