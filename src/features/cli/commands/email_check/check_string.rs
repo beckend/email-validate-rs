@@ -55,6 +55,10 @@ impl Command {
             acc += "\n";
             acc += item.address_email.as_ref();
 
+            if !item.reasons_failure.is_empty() {
+              acc += item.reasons_failure.join(", ").as_str()
+            }
+
             acc
           })
         ),
