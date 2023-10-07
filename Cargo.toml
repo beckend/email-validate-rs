@@ -1,6 +1,6 @@
 [package]
 name = 'email-validate'
-version = '0.1.9'
+version = '0.1.10'
 edition = '2021'
 keywords = ['email', 'validation', 'validate', 'bounce', 'free']
 categories = ['email', 'validation']
