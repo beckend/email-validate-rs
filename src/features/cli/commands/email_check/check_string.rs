@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use super::common::Api;
 use crate::{
   features::cli::{
-    command_common::CommandCheckStringOptions, commands::email_check::common::SingleFile,
+    command_common::CommandOptionsCheckString, commands::email_check::common::SingleFile,
   },
   modules::email_check::EmailCheckIsValid,
 };
@@ -15,7 +15,7 @@ use crate::{
 pub struct Command {}
 
 impl Command {
-  pub async fn execute(options: &CommandCheckStringOptions) -> Result<()> {
+  pub async fn execute(options: &CommandOptionsCheckString) -> Result<()> {
     let (items, items_dup) = Api::get_csv_items(options.input.as_str());
 
     if items.is_empty() {

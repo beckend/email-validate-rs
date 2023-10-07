@@ -2,14 +2,14 @@ use anyhow::Result;
 use std::path::Path;
 
 use super::common::Api;
-use crate::features::cli::command_common::{CommandCheckDirOptions, CommandCheckFileOptions};
+use crate::features::cli::command_common::{CommandOptionsCheckDir, CommandOptionsCheckFile};
 
 #[derive(Debug, Clone)]
 pub struct Command {}
 
 impl Command {
-  pub async fn execute(options: &CommandCheckFileOptions) -> Result<()> {
-    let options_dir = CommandCheckDirOptions {
+  pub async fn execute(options: &CommandOptionsCheckFile) -> Result<()> {
+    let options_dir = CommandOptionsCheckDir {
       dir_input: std::borrow::Cow::from(Path::new("/")),
       dir_output: options.dir_output.clone(),
       concurrency: options.concurrency,

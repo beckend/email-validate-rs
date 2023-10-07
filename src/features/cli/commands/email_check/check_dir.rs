@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::features::cli::command_common::CommandCheckDirOptions;
+use crate::features::cli::command_common::CommandOptionsCheckDir;
 
 use super::common::Api;
 
@@ -8,7 +8,7 @@ use super::common::Api;
 pub struct Command {}
 
 impl Command {
-  pub async fn execute(options: &CommandCheckDirOptions) -> Result<()> {
+  pub async fn execute(options: &CommandOptionsCheckDir) -> Result<()> {
     Api::handle_directory(options).await
   }
 }

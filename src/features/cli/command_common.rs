@@ -6,7 +6,28 @@ use std::path::Path;
 pub use crate::features::cli::{parsers::Parsers, validators::Validators};
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
-pub struct CommandCheckDirOptions {
+pub struct CommandOptionsFilterByPriority {
+  /// Directory containing .cvs files, it's walked recursively, the emails may be separated by newline, space, coma or semicolon
+  #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path_resolved, required = true)]
+  pub dir_input: Cow<'static, Path>,
+  /// Directory to output {input-file}-timeout.csv {input-file}-invalid.csv {input-file}-valid.csv {input-file}-timing.json
+  #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path, required = true)]
+  pub dir_output: Cow<'static, Path>,
+  #[clap(long, default_value_t = 25_usize)]
+  pub concurrency: usize,
+  /// per item
+  #[clap(
+    long,
+    default_value_t = 120_u64,
+    value_parser = Parsers::parse_duration_above_0
+  )]
+  pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub prefixes: Option<Vec<CowStr>>,
+}
+
+#[derive(Args, Debug, Clone, Eq, PartialEq)]
+pub struct CommandOptionsCheckDir {
   /// Directory containing .cvs files, it's walked recursively, the emails may be separated by newline, space, coma or semicolon
   #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path_resolved, required = true)]
   pub dir_input: Cow<'static, Path>,
@@ -25,7 +46,7 @@ pub struct CommandCheckDirOptions {
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
-pub struct CommandCheckFileOptions {
+pub struct CommandOptionsCheckFile {
   /// separated by newline, space, coma or semicolon
   #[clap(long, value_hint = ValueHint::FilePath, value_parser = Parsers::path_resolved, required = true)]
   pub file_input: Vec<Cow<'static, Path>>,
@@ -44,7 +65,7 @@ pub struct CommandCheckFileOptions {
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
-pub struct CommandCheckStringOptions {
+pub struct CommandOptionsCheckString {
   /// separated by space, coma or semicolon
   #[clap(long, required = true)]
   pub input: CowStr,
@@ -65,11 +86,11 @@ pub struct CommandEmptyOptions {}
 #[derive(Subcommand, Debug, Clone, Eq, PartialEq)]
 pub enum CLISubCommands {
   #[clap(name = "check-dir")]
-  CheckDir(CommandCheckDirOptions),
+  CheckDir(CommandOptionsCheckDir),
   #[clap(name = "check-file")]
-  CheckFile(CommandCheckFileOptions),
+  CheckFile(CommandOptionsCheckFile),
   #[clap(name = "check-string")]
-  CheckString(CommandCheckStringOptions),
+  CheckString(CommandOptionsCheckString),
   #[clap(name = "experiments")]
   Experiments(CommandEmptyOptions),
 }

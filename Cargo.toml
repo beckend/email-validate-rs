@@ -1,6 +1,6 @@
 [package]
 name = 'email-validate'
-version = '0.1.7'
+version = '0.1.8'
 edition = '2021'
 keywords = ['email', 'validation', 'validate', 'bounce', 'free']
 categories = ['email', 'validation']
@@ -30,6 +30,7 @@ cowstr = { version = '1.2.0', features = ['serde'] }
 crossterm = { version = '0.27.0', features = ['event-stream'] }
 dashmap = { version = '5.5.3', features = ['serde'] }
 dirs = '5.0.1'
+email-address-parser = "2.0.0"
 futures = { version = '0.3.28', features = ['thread-pool'] }
 humantime = '2.1.0'
 kanal = '0.1.0-pre8'

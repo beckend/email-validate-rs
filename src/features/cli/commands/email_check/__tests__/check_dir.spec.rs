@@ -13,7 +13,7 @@ async fn cli_command_check_dir() -> Result<()> {
     return Ok(());
   }
 
-  use crate::features::cli::command_common::CommandCheckDirOptions;
+  use crate::features::cli::command_common::CommandOptionsCheckDir;
 
   let path_fixtures = Path::new(std::file!()).parent().unwrap().join("fixtures");
 
@@ -21,7 +21,7 @@ async fn cli_command_check_dir() -> Result<()> {
   let path_output = tempfile::tempdir()?;
   let path_output = path_output.path().to_owned();
 
-  Command::execute(&CommandCheckDirOptions {
+  Command::execute(&CommandOptionsCheckDir {
     dir_input: Cow::from(path_fixtures_target),
     dir_output: Cow::from(path_output),
     concurrency: 100,

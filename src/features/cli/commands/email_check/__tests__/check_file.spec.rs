@@ -13,7 +13,7 @@ async fn cli_command_check_file() -> Result<()> {
     return Ok(());
   }
 
-  use crate::features::cli::command_common::CommandCheckFileOptions;
+  use crate::features::cli::command_common::CommandOptionsCheckFile;
 
   let path_fixtures = Path::new(std::file!()).parent().unwrap().join("fixtures");
 
@@ -29,7 +29,7 @@ async fn cli_command_check_file() -> Result<()> {
   .map(|x| Cow::from(path_fixtures_target.join(x)))
   .collect();
 
-  Command::execute(&CommandCheckFileOptions {
+  Command::execute(&CommandOptionsCheckFile {
     file_input,
     dir_output: Cow::from(path_output),
     concurrency: 100,

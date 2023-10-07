@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use cowstr::CowStr;
+use email_address_parser::EmailAddress;
 use futures::StreamExt;
 use kanal::AsyncSender;
 use once_cell::sync::Lazy;
@@ -22,7 +23,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::{
   features::cli::{
-    command_common::CommandCheckDirOptions, commands::email_check::tui::PayloadTUIUpdateTotal,
+    command_common::CommandOptionsCheckDir, commands::email_check::tui::PayloadTUIUpdateTotal,
   },
   model::INFALLIBLE,
   modules::{
@@ -58,7 +59,7 @@ pub struct SingleFile<'a> {
 pub struct Api {}
 
 impl Api {
-  async fn checks(x: &CommandCheckDirOptions) -> Result<()> {
+  async fn checks(x: &CommandOptionsCheckDir) -> Result<()> {
     // Create output directory to check if we can output anything
     tokio::fs::create_dir_all(&x.dir_output).await?;
 
@@ -93,6 +94,10 @@ impl Api {
         let val = x.trim();
 
         if val.is_empty() {
+          return acc;
+        }
+
+        if EmailAddress::parse(val, None).is_none() {
           return acc;
         }
 
@@ -221,7 +226,7 @@ impl Api {
 
   async fn process_single_file_write_output<TPathFile: AsRef<Path>>(
     path_file: TPathFile,
-    options: &CommandCheckDirOptions,
+    options: &CommandOptionsCheckDir,
     state: Arc<RwLock<Option<SingleFile<'static>>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
   ) -> Result<()> {
@@ -239,7 +244,7 @@ impl Api {
 
   async fn get_single_file_state<'a>(
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
-    options: &CommandCheckDirOptions,
+    options: &CommandOptionsCheckDir,
     path_file: PathBuf,
   ) -> Result<SingleFile<'a>> {
     let mut file = BufReader::new(
@@ -282,7 +287,7 @@ impl Api {
 
   async fn write_output_files<TPathFile: AsRef<Path>>(
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
-    options: &CommandCheckDirOptions,
+    options: &CommandOptionsCheckDir,
     state: Arc<RwLock<Option<SingleFile<'_>>>>,
     path_file: TPathFile,
   ) -> Result<()> {
@@ -497,7 +502,7 @@ impl Api {
   }
 
   pub async fn do_handle_directory_recursive(
-    options: &CommandCheckDirOptions,
+    options: &CommandOptionsCheckDir,
     files_paths: Vec<PathBuf>,
     time_fn: Option<coarsetime::Instant>,
   ) -> Result<()> {
@@ -697,7 +702,7 @@ impl Api {
     Ok(())
   }
 
-  async fn do_handle_directory(options: &CommandCheckDirOptions) -> Result<()> {
+  async fn do_handle_directory(options: &CommandOptionsCheckDir) -> Result<()> {
     let time_fn = coarsetime::Instant::now();
     slog::info!(LOG, "Start");
     Self::checks(options).await?;
@@ -718,7 +723,7 @@ impl Api {
 
 impl Api {
   // so we can be sure std io has been flushed
-  pub async fn handle_directory(options: &CommandCheckDirOptions) -> Result<()> {
+  pub async fn handle_directory(options: &CommandOptionsCheckDir) -> Result<()> {
     Self::do_handle_directory(options).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
