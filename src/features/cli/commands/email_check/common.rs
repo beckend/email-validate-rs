@@ -355,13 +355,11 @@ impl Api {
 
         let mut buf_writer = Self::get_file_writer(&path_write).await?;
 
-        for (index, x) in items.into_iter().enumerate() {
-          let d = if index == 0 {
-            x.address_email.to_string()
-          } else {
-            format!(";{}", x.address_email)
-          };
-          Self::write_bytes_to_file(&mut buf_writer, d.as_bytes()).await?;
+        Self::write_bytes_to_file(&mut buf_writer, "email\n".as_bytes()).await?;
+
+        for x in items.into_iter() {
+          Self::write_bytes_to_file(&mut buf_writer, format!("{}\n", x.address_email).as_bytes())
+            .await?;
         }
 
         buf_writer.flush().await?;
@@ -458,14 +456,11 @@ impl Api {
             .sort_by(|a, b| b.address_email.cmp(&a.address_email));
 
           let mut buf_writer = Self::get_file_writer(&path_write).await?;
+          Self::write_bytes_to_file(&mut buf_writer, "email\n".as_bytes()).await?;
 
-          for (index, x) in state_c.timeouts.into_iter().enumerate() {
-            let d = if index == 0 {
-              x.address_email.to_string()
-            } else {
-              format!(";{}", x.address_email)
-            };
-            Self::write_bytes_to_file(&mut buf_writer, d.as_bytes()).await?;
+          for x in state_c.timeouts.into_iter() {
+            Self::write_bytes_to_file(&mut buf_writer, format!("{}\n", x.address_email).as_bytes())
+              .await?;
           }
 
           buf_writer.flush().await?;
@@ -780,14 +775,11 @@ impl Api {
       });
 
       let mut buf_writer = Self::get_file_writer(&path_write_all_valids).await?;
+      Self::write_bytes_to_file(&mut buf_writer, "email\n".as_bytes()).await?;
 
-      for (index, x) in items.into_iter().enumerate() {
-        let d = if index == 0 {
-          x.address_email.to_string()
-        } else {
-          format!(";{}", x.address_email)
-        };
-        Self::write_bytes_to_file(&mut buf_writer, d.as_bytes()).await?;
+      for x in items.into_iter() {
+        Self::write_bytes_to_file(&mut buf_writer, format!("{}\n", x.address_email).as_bytes())
+          .await?;
       }
 
       buf_writer.flush().await?;
