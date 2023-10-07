@@ -4,6 +4,8 @@ use cowstr::CowStr;
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
 
+use super::email_address_parser::EmailAddressWrapped;
+
 const REACHABLE_INVALIDS: &[Reachable] = &[Reachable::Invalid, Reachable::Unknown];
 
 pub struct EmailCheck {}
@@ -11,6 +13,7 @@ pub struct EmailCheck {}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmailCheckIsValid {
   pub address_email: CowStr,
+  pub email: EmailAddressWrapped,
   pub is_valid: bool,
   pub reasons_failure: Vec<CowStr>,
 }
@@ -25,6 +28,7 @@ impl EmailCheck {
   }
 
   pub fn is_valid(input: &CheckEmailOutput) -> Result<EmailCheckIsValid> {
+    let email: EmailAddressWrapped = input.input.as_str().into();
     let address_email: CowStr = input.input.clone().into();
     let mut reasons_failure: Vec<CowStr> = Vec::new();
 
@@ -74,6 +78,7 @@ impl EmailCheck {
 
     Ok(EmailCheckIsValid {
       address_email,
+      email,
       is_valid: reasons_failure.is_empty(),
       reasons_failure,
     })

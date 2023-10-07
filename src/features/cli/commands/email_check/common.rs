@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::{
   fs::OpenOptions,
-  io::{AsyncReadExt, BufReader},
+  io::{AsyncReadExt, AsyncWriteExt, BufReader},
   sync::RwLock,
 };
 use walkdir::{DirEntry, WalkDir};
@@ -353,17 +353,18 @@ impl Api {
           return Ok::<(), anyhow::Error>(());
         }
 
-        FileWriter::builder()
-          .filename(Cow::Borrowed(&path_write))
-          .build()
-          .write(
-            items
-              .into_iter()
-              .map(|x| x.address_email.clone())
-              .collect::<Vec<_>>()
-              .join(";"),
-          )
-          .await?;
+        let mut buf_writer = Self::get_file_writer(&path_write).await?;
+
+        for (index, x) in items.into_iter().enumerate() {
+          let d = if index == 0 {
+            x.address_email.to_string()
+          } else {
+            format!(";{}", x.address_email)
+          };
+          Self::write_bytes_to_file(&mut buf_writer, d.as_bytes()).await?;
+        }
+
+        buf_writer.flush().await?;
 
         if let Some(tx) = sender_update {
           tx.send(TUIUpdateDispatch::MessageMain(
@@ -456,18 +457,18 @@ impl Api {
             .timeouts
             .sort_by(|a, b| b.address_email.cmp(&a.address_email));
 
-          FileWriter::builder()
-            .filename(Cow::Borrowed(&path_write))
-            .build()
-            .write(
-              state_c
-                .timeouts
-                .into_iter()
-                .map(|x| x.address_email.clone())
-                .collect::<Vec<_>>()
-                .join(";"),
-            )
-            .await?;
+          let mut buf_writer = Self::get_file_writer(&path_write).await?;
+
+          for (index, x) in state_c.timeouts.into_iter().enumerate() {
+            let d = if index == 0 {
+              x.address_email.to_string()
+            } else {
+              format!(";{}", x.address_email)
+            };
+            Self::write_bytes_to_file(&mut buf_writer, d.as_bytes()).await?;
+          }
+
+          buf_writer.flush().await?;
 
           if let Some(tx) = sender_update {
             tx.send(TUIUpdateDispatch::MessageMain(
@@ -501,6 +502,38 @@ impl Api {
     Ok(())
   }
 
+  async fn get_file_writer<TPathFile: AsRef<Path>>(
+    path_file: TPathFile,
+  ) -> Result<tokio::io::BufWriter<tokio::fs::File>> {
+    use tokio::{
+      fs,
+      io::{self},
+    };
+
+    let path_file = path_file.as_ref();
+
+    if let Some(parent) = path_file.parent() {
+      fs::create_dir_all(parent).await?;
+    } else {
+      return Err(anyhow::anyhow!("failed to get parent directory."));
+    }
+
+    let file = OpenOptions::new()
+      .write(true)
+      .create(true)
+      .truncate(true)
+      .open(&path_file)
+      .await?;
+    Ok(io::BufWriter::new(file))
+  }
+
+  async fn write_bytes_to_file<TData: AsRef<[u8]>>(
+    file: &mut tokio::io::BufWriter<tokio::fs::File>,
+    data: TData,
+  ) -> Result<usize> {
+    file.write(data.as_ref()).await.map_err(anyhow::Error::new)
+  }
+
   pub async fn do_handle_directory_recursive(
     options: &CommandOptionsCheckDir,
     files_paths: Vec<PathBuf>,
@@ -531,14 +564,17 @@ impl Api {
         loop {
           if tui_update_tx.is_closed() {
             break;
-          } else if tui_update_tx
-            .send(TUIUpdateDispatch::TimeElapsed(humantime::format_duration(
-              humantime::parse_duration(&format!("{}ns", time_fn.elapsed().as_nanos()))?,
-            )))
-            .await
-            .is_err()
-          {
-            break;
+          } else {
+            #[allow(clippy::collapsible_else_if)]
+            if tui_update_tx
+              .send(TUIUpdateDispatch::TimeElapsed(humantime::format_duration(
+                humantime::parse_duration(&format!("{}ns", time_fn.elapsed().as_nanos()))?,
+              )))
+              .await
+              .is_err()
+            {
+              break;
+            }
           }
 
           tokio::time::sleep(timer).await;
@@ -674,6 +710,8 @@ impl Api {
       }
     }
 
+    let all_valids = Arc::new(RwLock::new(Vec::<EmailCheckIsValid>::new()));
+
     for (path_file, state) in file_states {
       let tui_update_tx = tui_update_tx.clone();
       let items_len = if state.items.is_some() {
@@ -694,16 +732,26 @@ impl Api {
         let state_threads = Arc::new(RwLock::new(Some(state)));
         let tui_update_tx = tui_update_tx.clone();
         let options = options.clone();
+        let all_valids = all_valids.clone();
 
         async move {
           Self::process_single_file_write_output(
             path_file,
             &options,
-            state_threads,
+            state_threads.clone(),
             Some(tui_update_tx),
           )
           .await?;
 
+          all_valids.write().await.append(
+            &mut state_threads
+              .read()
+              .await
+              .clone()
+              .expect("state_threads.read")
+              .valids
+              .clone(),
+          );
           Ok::<(), anyhow::Error>(())
         }
       }));
@@ -717,6 +765,34 @@ impl Api {
       task_tui_update_timer.abort();
     }
 
+    let path_write_all_valids = options.dir_output.join("all_valids.csv");
+
+    {
+      let mut lock = all_valids.write().await;
+      let mut items = lock.drain(..).collect::<Vec<_>>();
+      drop(lock);
+      items.sort_by(|a, b| {
+        a.email
+          .0
+          .get_domain()
+          .cmp(b.email.0.get_domain())
+          .then(a.email.0.get_local_part().cmp(b.email.0.get_local_part()))
+      });
+
+      let mut buf_writer = Self::get_file_writer(&path_write_all_valids).await?;
+
+      for (index, x) in items.into_iter().enumerate() {
+        let d = if index == 0 {
+          x.address_email.to_string()
+        } else {
+          format!(";{}", x.address_email)
+        };
+        Self::write_bytes_to_file(&mut buf_writer, d.as_bytes()).await?;
+      }
+
+      buf_writer.flush().await?;
+    }
+
     slog::info!(
       LOG,
       "End: {}",
@@ -727,6 +803,15 @@ impl Api {
     );
 
     println!("{}", task_tui_update.await??.message_main);
+
+    slog::info!(
+      LOG,
+      "All valids written to: {}\n",
+      path_write_all_valids
+        .canonicalize()
+        .expect("canonicalize")
+        .display(),
+    );
 
     Ok(())
   }
