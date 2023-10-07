@@ -269,7 +269,7 @@ impl Api {
     file.read_to_string(&mut content).await?;
 
     if let Some(tx) = sender_update {
-      tx.send(TUIUpdateDispatch::UpdateMessageMain(
+      tx.send(TUIUpdateDispatch::MessageMain(
         format!("Path: {}\n", path_file.display()).into(),
       ))
       .await
@@ -366,7 +366,7 @@ impl Api {
           .await?;
 
         if let Some(tx) = sender_update {
-          tx.send(TUIUpdateDispatch::UpdateMessageMain(
+          tx.send(TUIUpdateDispatch::MessageMain(
             format!(
               "{} written to: {}\n",
               label,
@@ -421,7 +421,7 @@ impl Api {
             .await?;
 
           if let Some(tx) = sender_update {
-            tx.send(TUIUpdateDispatch::UpdateMessageMain(
+            tx.send(TUIUpdateDispatch::MessageMain(
               format!(
                 "Timings report file written to: {}\n",
                 path_write.canonicalize().expect("canonicalize").display(),
@@ -470,7 +470,7 @@ impl Api {
             .await?;
 
           if let Some(tx) = sender_update {
-            tx.send(TUIUpdateDispatch::UpdateMessageMain(
+            tx.send(TUIUpdateDispatch::MessageMain(
               format!(
                 "Timeouts report file written to: {}\n",
                 path_write.canonicalize().expect("canonicalize").display(),
@@ -491,7 +491,7 @@ impl Api {
     }
 
     if let Some(tx) = sender_update {
-      tx.send(TUIUpdateDispatch::UpdateTotalFilesWritten(
+      tx.send(TUIUpdateDispatch::TotalFilesWritten(
         super::tui::PayloadTUIUpdateFilesWritten { count_total: 1 },
       ))
       .await
@@ -523,15 +523,40 @@ impl Api {
       async move { Tui::execute(tui_update_rx).await }
     });
 
+    let task_tui_update_timer = tokio::spawn({
+      let tui_update_tx = tui_update_tx.clone();
+      let timer = Duration::from_millis(100);
+
+      async move {
+        loop {
+          if tui_update_tx.is_closed() {
+            break;
+          } else if tui_update_tx
+            .send(TUIUpdateDispatch::TimeElapsed(humantime::format_duration(
+              humantime::parse_duration(&format!("{}ns", time_fn.elapsed().as_nanos()))?,
+            )))
+            .await
+            .is_err()
+          {
+            break;
+          }
+
+          tokio::time::sleep(timer).await;
+        }
+
+        Ok::<(), anyhow::Error>(())
+      }
+    });
+
     tui_update_tx
-      .send(TUIUpdateDispatch::UpdateMessageMain(
+      .send(TUIUpdateDispatch::MessageMain(
         format!("Concurrency: {}\n", options.concurrency).into(),
       ))
       .await
       .expect("send message main concurrency.");
 
     tui_update_tx
-      .send(TUIUpdateDispatch::UpdateMessageMain(
+      .send(TUIUpdateDispatch::MessageMain(
         format!("Timeout: {}s\n\n", options.timeout_seconds).into(),
       ))
       .await
@@ -633,7 +658,7 @@ impl Api {
               .await?;
 
             tui_update_tx
-              .send(TUIUpdateDispatch::UpdateMessageMain(
+              .send(TUIUpdateDispatch::MessageMain(
                 format!(
                   "Duplicates file written to: {}\n",
                   path_write.canonicalize().expect("canonicalize").display(),
@@ -658,7 +683,7 @@ impl Api {
       };
       tui_update_tx
         .clone()
-        .send(TUIUpdateDispatch::UpdateTotal(PayloadTUIUpdateTotal {
+        .send(TUIUpdateDispatch::Total(PayloadTUIUpdateTotal {
           count_files_total: 1,
           count_total: items_len as usize,
         }))
@@ -688,12 +713,16 @@ impl Api {
       x.await??;
     }
 
+    if !task_tui_update_timer.is_finished() {
+      task_tui_update_timer.abort();
+    }
+
     slog::info!(
       LOG,
       "End: {}",
       humantime::format_duration(humantime::parse_duration(&format!(
-        "{}ns",
-        time_fn.elapsed().as_nanos()
+        "{}ms",
+        time_fn.elapsed().as_millis()
       ))?);
     );
 

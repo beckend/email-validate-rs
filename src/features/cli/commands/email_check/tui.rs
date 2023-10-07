@@ -6,6 +6,7 @@ use crossterm::{
   terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::StreamExt;
+use humantime::FormattedDuration;
 use kanal::{AsyncReceiver, AsyncSender};
 use ratatui::{prelude::*, widgets::*};
 use std::{
@@ -18,10 +19,11 @@ const LIMIT_EMAILS: usize = 10_usize;
 type Term = Terminal<CrosstermBackend<io::Stdout>>;
 
 pub enum TUIUpdateDispatch {
+  TimeElapsed(FormattedDuration),
   Update(PayloadTUIUpdate),
-  UpdateMessageMain(CowStr),
-  UpdateTotal(PayloadTUIUpdateTotal),
-  UpdateTotalFilesWritten(PayloadTUIUpdateFilesWritten),
+  MessageMain(CowStr),
+  Total(PayloadTUIUpdateTotal),
+  TotalFilesWritten(PayloadTUIUpdateFilesWritten),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,7 @@ pub struct Tui {
   pub count_valid: usize,
   pub count_timeout: usize,
   pub message_main: CowStr,
+  pub time_elapsed: Option<FormattedDuration>,
 }
 
 impl Tui {
@@ -133,6 +136,10 @@ impl Tui {
       tokio::select! {
           Ok(action) = rx_update.recv() => {
            match action {
+            TUIUpdateDispatch::TimeElapsed(x) => {
+              self.time_elapsed = Some(x);
+            }
+
             TUIUpdateDispatch::Update(update) => {
               limit_email(&mut self.emails);
               self.emails.push_front(update.email);
@@ -142,16 +149,16 @@ impl Tui {
               self.count_total_processed += update.count_total;
             }
 
-            TUIUpdateDispatch::UpdateMessageMain(update) => {
+            TUIUpdateDispatch::MessageMain(update) => {
               self.message_main += update;
             }
 
-            TUIUpdateDispatch::UpdateTotal(update) => {
+            TUIUpdateDispatch::Total(update) => {
               self.count_total += update.count_total;
               self.count_files_total += update.count_files_total;
             }
 
-            TUIUpdateDispatch::UpdateTotalFilesWritten(update) => {
+            TUIUpdateDispatch::TotalFilesWritten(update) => {
               self.count_files_total_processed += update.count_total;
             }
           }
@@ -215,7 +222,8 @@ impl Tui {
 
     f.render_widget(
       Paragraph::new(format!(
-        "files: {files}   filesDone: {files_processed}   total: {total}   done: {done}   timeout: {timeout}   invalid: {invalid}   valid: {valid}",
+        "{time_elapsed}\nfiles: {files}   filesDone: {files_processed}   total: {total}   done: {done}   timeout: {timeout}   invalid: {invalid}   valid: {valid}",
+        time_elapsed = self.time_elapsed.clone().unwrap_or_else(|| humantime::format_duration(Duration::new(0, 0))),
         files = self.count_files_total,
         files_processed = self.count_files_total_processed,
         total = self.count_total,
