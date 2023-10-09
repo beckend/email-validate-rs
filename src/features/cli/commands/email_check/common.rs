@@ -687,7 +687,7 @@ impl Api {
       format!("Timeout: {}s\n", options.timeout_seconds),
       if options.additional_senders_per_domain.is_some() {
         format!(
-          "Additional senders per domain: {}s\n\n",
+          "Additional senders per domain: {}\n\n",
           options
             .additional_senders_per_domain
             .as_ref()
