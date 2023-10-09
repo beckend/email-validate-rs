@@ -22,6 +22,12 @@ async fn cli_command_check_dir() -> Result<()> {
   let path_output = path_output.path().to_owned();
 
   Command::execute(&CommandOptionsCheckDir {
+    additional_senders_per_domain: Some(
+      "contact,info,hello"
+        .split('"')
+        .map(|x| x.into())
+        .collect::<Vec<_>>(),
+    ),
     dir_input: Cow::from(path_fixtures_target),
     dir_output: Cow::from(path_output),
     concurrency: 100,

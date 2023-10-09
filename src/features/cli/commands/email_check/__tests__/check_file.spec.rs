@@ -30,6 +30,7 @@ async fn cli_command_check_file() -> Result<()> {
   .collect();
 
   Command::execute(&CommandOptionsCheckFile {
+    additional_senders_per_domain: None,
     file_input,
     dir_output: Cow::from(path_output),
     concurrency: 100,
