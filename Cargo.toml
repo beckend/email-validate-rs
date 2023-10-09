@@ -1,6 +1,6 @@
 [package]
 name = 'email-validate'
-version = '0.1.11'
+version = '0.1.12'
 edition = '2021'
 keywords = ['email', 'validation', 'validate', 'bounce', 'free']
 categories = ['email', 'validation']
@@ -37,6 +37,7 @@ kanal = '0.1.0-pre8'
 minstant = '0.1.3'
 once_cell = "1.18.0"
 path-clean = '1.0.1'
+rand = { version = "0.8.5", features = [] }
 ratatui = '0.23.0'
 serde = { version = '1.0.188', features = ['derive'] }
 serde_json = { version = '1.0.107', features = ['preserve_order'] }

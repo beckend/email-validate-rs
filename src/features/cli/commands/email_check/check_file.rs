@@ -10,6 +10,7 @@ pub struct Command {}
 impl Command {
   pub async fn execute(options: &CommandOptionsCheckFile) -> Result<()> {
     let options_dir = CommandOptionsCheckDir {
+      additional_senders_per_domain: options.additional_senders_per_domain.clone(),
       dir_input: std::borrow::Cow::from(Path::new("/")),
       dir_output: options.dir_output.clone(),
       concurrency: options.concurrency,

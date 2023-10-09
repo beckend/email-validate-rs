@@ -222,12 +222,13 @@ impl Tui {
 
     f.render_widget(
       Paragraph::new(format!(
-        "{time_elapsed}\nfiles: {files}   filesDone: {files_processed}   total: {total}   done: {done}   timeout: {timeout}   invalid: {invalid}   valid: {valid}",
+        "{time_elapsed}\nFiles: {files}   FilesDone: {files_processed}   Total: {total}   Done: {done}   Timeout: {timeout}   Invalid: {invalid}   Valid: {valid}\nRemaining: {items_remaining}",
         time_elapsed = self.time_elapsed.clone().unwrap_or_else(|| humantime::format_duration(Duration::new(0, 0))),
         files = self.count_files_total,
         files_processed = self.count_files_total_processed,
         total = self.count_total,
         done = self.count_total_processed,
+        items_remaining = self.count_total - self.count_total_processed,
         timeout = self.count_timeout,
         invalid = self.count_invalid,
         valid = self.count_valid

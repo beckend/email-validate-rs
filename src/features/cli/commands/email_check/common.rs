@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use cowstr::CowStr;
+use dashmap::DashMap;
 use email_address_parser::EmailAddress;
 use futures::StreamExt;
 use kanal::AsyncSender;
@@ -27,6 +28,7 @@ use crate::{
   },
   model::INFALLIBLE,
   modules::{
+    email_address_parser::EmailAddressWrapped,
     email_check::{EmailCheck, EmailCheckIsValid},
     fs::write::FileWriter,
     logger::Logger,
@@ -46,7 +48,7 @@ pub struct ItemTimeout {
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct SingleFile<'a> {
   pub path: Cow<'a, Path>,
-  pub items: Option<Vec<CowStr>>,
+  pub items: Option<Vec<(EmailAddressWrapped, CowStr)>>,
   pub items_duplicates: Option<Vec<CowStr>>,
   pub count_total: usize,
   pub valids: Vec<EmailCheckIsValid>,
@@ -84,41 +86,121 @@ impl Api {
     Ok(returned)
   }
 
+  fn dashmap_arc_to_vec<K, V>(input: &Arc<DashMap<K, V>>) -> DashMap<K, V>
+  where
+    K: Eq + std::hash::Hash + Clone,
+    V: Clone,
+  {
+    DashMap::from_iter(
+      input
+        .iter()
+        .map(|x| (x.key().clone(), x.value().clone()))
+        .collect::<Vec<_>>(),
+    )
+  }
+
   // return: first are item, second are duplicates
-  pub fn get_csv_items<TInput: AsRef<str>>(x: TInput) -> (Vec<CowStr>, Vec<CowStr>) {
+  pub fn get_csv_items<TInput: AsRef<str>>(
+    x: TInput,
+    additional_senders_per_domain: Option<&Vec<CowStr>>,
+  ) -> (Vec<(EmailAddressWrapped, CowStr)>, Vec<CowStr>, usize) {
     let mut map_exists = HashMap::<CowStr, bool>::new();
 
-    x.as_ref()
-      .split([' ', ',', ';', '\n'].as_ref())
-      .fold((Vec::new(), Vec::new()), |mut acc, x| {
+    let mut returned = x.as_ref().split([' ', ',', ';', '\n'].as_ref()).fold(
+      (
+        Vec::<(EmailAddressWrapped, CowStr)>::new(),
+        Vec::<CowStr>::new(),
+        0,
+      ),
+      |mut acc, x| {
         let val = x.trim();
 
         if val.is_empty() {
           return acc;
         }
 
-        if EmailAddress::parse(val, None).is_none() {
+        let Some(email) = EmailAddress::parse(val, None) else {
           return acc;
-        }
-
+        };
         if map_exists.contains_key(val) {
           acc.1.push(val.into());
           return acc;
         }
         let v: CowStr = val.into();
         map_exists.insert(v.clone(), true);
-        acc.0.push(v);
+        acc.0.push((email.into(), v));
 
         acc
-      })
+      },
+    );
+
+    if let Some(adds) = additional_senders_per_domain {
+      // need 2 operations, adding to the current iter is bad
+      let mut add_to_returned = returned.0.iter().fold(
+        (adds, Vec::<(EmailAddressWrapped, CowStr)>::new()),
+        |mut acc, unique| {
+          for sender in acc.0.iter() {
+            let wanted_email: CowStr = format!("{sender}@{}", unique.0 .0.get_domain()).into();
+
+            if !map_exists.contains_key(&wanted_email) {
+              acc.1.push((wanted_email.as_str().into(), wanted_email));
+              returned.2 += 1;
+            }
+          }
+
+          acc
+        },
+      );
+
+      returned.0.append(&mut add_to_returned.1);
+    }
+
+    returned
   }
 
   async fn process_single_item(
-    email_address: CowStr,
+    email_address: (EmailAddressWrapped, CowStr),
     state: Arc<RwLock<Option<SingleFile<'_>>>>,
+    timeouts_per_domain: Option<Arc<DashMap<CowStr, bool>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
     timeout_seconds: u64,
   ) -> Result<()> {
+    async fn report_err_timeout(
+      email_address: &(EmailAddressWrapped, CowStr),
+      state: &Arc<RwLock<Option<SingleFile<'_>>>>,
+      sender_update: &Option<AsyncSender<TUIChannelPayload>>,
+      timeout_seconds: u64,
+    ) {
+      {
+        let mut lock = state.write().await;
+        let state = lock.as_mut().expect("singlefile");
+        state.count_total += 1;
+        state.timeouts.push(ItemTimeout {
+          address_email: email_address.1.clone(),
+        });
+      }
+
+      let time_ms_timeout = Duration::from_secs(timeout_seconds);
+      if let Some(tx) = sender_update {
+        tx.send(TUIUpdateDispatch::Update(PayloadTUIUpdate {
+          email: (email_address.1.clone(), time_ms_timeout, false),
+          count_invalid: 0,
+          count_valid: 0,
+          count_timeout: 1,
+          count_total: 1,
+        }))
+        .await
+        .expect("sending update due to timeout");
+      }
+    }
+
+    if let Some(timeouts_map) = timeouts_per_domain.clone() {
+      if timeouts_map.contains_key(email_address.0 .0.get_domain()) {
+        report_err_timeout(&email_address, &state, &sender_update, timeout_seconds).await;
+        return Ok(());
+      }
+    }
+
     let fut = {
       let state = state.clone();
       let email_address = email_address.clone();
@@ -127,7 +209,7 @@ impl Api {
       async move {
         let sender_update = sender_update_c;
         let t_start = minstant::Instant::now();
-        let t: &str = email_address.as_ref();
+        let t: &str = email_address.1.as_ref();
         let (result, _) = EmailCheck::check_single(t).await?;
 
         let mut lock = state.write().await;
@@ -148,7 +230,7 @@ impl Api {
 
         if let Some(tx) = sender_update {
           tx.send(TUIUpdateDispatch::Update(PayloadTUIUpdate {
-            email: (email_address, t_start.elapsed(), is_valid),
+            email: (email_address.1, t_start.elapsed(), is_valid),
             count_total: 1,
             count_invalid: if is_valid { 0 } else { 1 },
             count_valid: if is_valid { 1 } else { 0 },
@@ -165,26 +247,10 @@ impl Api {
     let time_ms_timeout = Duration::from_secs(timeout_seconds);
 
     if tokio::time::timeout(time_ms_timeout, fut).await.is_err() {
-      {
-        let mut lock = state.write().await;
-        let state = lock.as_mut().expect("singlefile");
-        state.count_total += 1;
-        state.timeouts.push(ItemTimeout {
-          address_email: email_address.clone(),
-        });
+      if let Some(timeouts_map) = timeouts_per_domain {
+        timeouts_map.insert(email_address.0 .0.get_domain().into(), true);
       }
-
-      if let Some(tx) = sender_update {
-        tx.send(TUIUpdateDispatch::Update(PayloadTUIUpdate {
-          email: (email_address, time_ms_timeout, false),
-          count_invalid: 0,
-          count_valid: 0,
-          count_timeout: 1,
-          count_total: 1,
-        }))
-        .await
-        .expect("sending update due to timeout");
-      }
+      report_err_timeout(&email_address, &state, &sender_update, timeout_seconds).await;
     }
 
     Ok(())
@@ -193,6 +259,7 @@ impl Api {
   pub async fn process_batch(
     state: Arc<RwLock<Option<SingleFile<'static>>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
+    timeouts_per_domain: Option<Arc<DashMap<CowStr, bool>>>,
     timeout_seconds: u64,
     concurrency: usize,
   ) -> Result<()> {
@@ -202,16 +269,34 @@ impl Api {
     }
 
     let state_temp = s_lock.as_mut().expect("singlefile");
-    let items = state_temp.items.take().unwrap();
+    let mut items = state_temp.items.take().unwrap();
+    items.sort_by(|a, b| a.0 .0.get_domain().cmp(b.0 .0.get_domain()));
+
+    // so the domains are shuffled, the timeouts can be spread across, so when a timeout occurs, the later item will not try to contact that domain
+    // if no shuffle, then all items from the same domain are tried in parallell and it's multiple of the same domain times outs which is pointless
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
+    items.shuffle(&mut thread_rng());
+
     drop(s_lock);
 
     let tasks = futures::stream::iter(items.into_iter())
       .map(|x| {
         let state = state.clone();
         let sender_update = sender_update.clone();
+        let timeouts_per_domain = timeouts_per_domain.clone();
 
         tokio::spawn({
-          async move { Self::process_single_item(x, state, sender_update, timeout_seconds).await }
+          async move {
+            Self::process_single_item(
+              x,
+              state,
+              timeouts_per_domain,
+              sender_update,
+              timeout_seconds,
+            )
+            .await
+          }
         })
       })
       .buffer_unordered(concurrency)
@@ -228,11 +313,13 @@ impl Api {
     path_file: TPathFile,
     options: &CommandOptionsCheckDir,
     state: Arc<RwLock<Option<SingleFile<'static>>>>,
+    timeouts_per_domain: Option<Arc<DashMap<CowStr, bool>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
   ) -> Result<()> {
     Self::process_batch(
       state.clone(),
       sender_update.clone(),
+      timeouts_per_domain,
       options.timeout_seconds,
       options.concurrency,
     )
@@ -268,7 +355,7 @@ impl Api {
     let mut content = String::new();
     file.read_to_string(&mut content).await?;
 
-    if let Some(tx) = sender_update {
+    if let Some(tx) = sender_update.clone() {
       tx.send(TUIUpdateDispatch::MessageMain(
         format!("Path: {}\n", path_file.display()).into(),
       ))
@@ -276,7 +363,24 @@ impl Api {
       .expect("send message main file path");
     }
 
-    let (items, items_duplicates) = Self::get_csv_items(&content);
+    let (items, items_duplicates, items_added) =
+      Self::get_csv_items(&content, options.additional_senders_per_domain.as_ref());
+
+    if items_added != 0 {
+      if let Some(tx) = sender_update {
+        tx.send(TUIUpdateDispatch::MessageMain(
+          format!(
+            "Emails added for every domain: {} - {}\n",
+            items_added,
+            path_file.file_name().expect("file_name").to_string_lossy(),
+          )
+          .into(),
+        ))
+        .await
+        .expect("send message main items_added");
+      }
+    }
+
     Ok(SingleFile {
       path: Cow::from(path_file),
       items: Some(items),
@@ -539,9 +643,8 @@ impl Api {
       return Err(anyhow::anyhow!("No .csv files found"));
     }
 
-    let map_duplicates = Arc::new(RwLock::new(Some(
-      dashmap::DashMap::<CowStr, Vec<CowStr>>::new(),
-    )));
+    // the key is the email the vec contains file paths
+    let map_duplicates = Arc::new(DashMap::<CowStr, Vec<CowStr>>::new());
     let (tui_update_tx, tui_update_rx) = Tui::new_channels(options.concurrency);
 
     let mut tasks = Vec::new();
@@ -579,19 +682,28 @@ impl Api {
       }
     });
 
-    tui_update_tx
-      .send(TUIUpdateDispatch::MessageMain(
-        format!("Concurrency: {}\n", options.concurrency).into(),
-      ))
-      .await
-      .expect("send message main concurrency.");
+    let msg_begin = [
+      format!("Concurrency: {}\n", options.concurrency),
+      format!("Timeout: {}s\n", options.timeout_seconds),
+      if options.additional_senders_per_domain.is_some() {
+        format!(
+          "Additional senders per domain: {}s\n\n",
+          options
+            .additional_senders_per_domain
+            .as_ref()
+            .expect(INFALLIBLE)
+            .join(", ")
+        )
+      } else {
+        "\n".into()
+      },
+    ]
+    .join("");
 
     tui_update_tx
-      .send(TUIUpdateDispatch::MessageMain(
-        format!("Timeout: {}s\n\n", options.timeout_seconds).into(),
-      ))
+      .send(TUIUpdateDispatch::MessageMain(msg_begin.into()))
       .await
-      .expect("send message main timeout.");
+      .expect("send message main begin.");
 
     let file_states_tasks = files_paths
       .into_iter()
@@ -605,13 +717,11 @@ impl Api {
           async move {
             let mut state =
               Self::get_single_file_state(Some(tui_update_tx), &options, the_path.clone()).await?;
-            let lock = map_duplicates.write().await;
-            let map_dups = lock.as_ref().unwrap();
 
             if let Some(items) = state.items.as_mut() {
               items.retain(|item| {
-                if map_dups.contains_key(item) {
-                  let mut path_dups = map_dups.get_mut(item).expect(INFALLIBLE);
+                if map_duplicates.contains_key(&item.1) {
+                  let mut path_dups = map_duplicates.get_mut(&item.1).expect(INFALLIBLE);
 
                   if !path_dups.contains(&path_file_str) {
                     path_dups.push(path_file_str.clone());
@@ -620,7 +730,7 @@ impl Api {
                   return false;
                 }
 
-                map_dups.insert(item.to_string().into(), vec![path_file_str.clone()]);
+                map_duplicates.insert(item.1.clone(), vec![path_file_str.clone()]);
 
                 true
               });
@@ -628,12 +738,12 @@ impl Api {
 
             if let Some(items) = state.items_duplicates.as_ref() {
               items.iter().for_each(|item| {
-                if map_dups.contains_key(item) {
+                if map_duplicates.contains_key(item) {
                 } else {
                   // for something in the map to count as a dup, it needs to be happening twice, so we insert it twice
                   // the map contains a vec of filepaths which is a dup, it being there twice means that it had itself dups in it's items
                   for _ in 1..3 {
-                    map_dups.insert(item.to_string().into(), vec![path_file_str.clone()]);
+                    map_duplicates.insert(item.to_string().into(), vec![path_file_str.clone()]);
                   }
                 }
               });
@@ -653,24 +763,24 @@ impl Api {
 
     {
       let path_write = options.dir_output.join("duplicates.json");
-      let dups = map_duplicates.write().await.take().unwrap();
+      // let map_duplicates = map_duplicates.write().await.take().unwrap();
 
       {
         // 2 phases since dashmap has sync primitives that dead locks when a borrow is at hand
         let mut not_dups = Vec::new();
 
-        for x in dups.iter() {
+        for x in map_duplicates.iter() {
           if x.value().len() < 2 {
             not_dups.push(x.key().to_owned());
           }
         }
 
         for x in not_dups {
-          dups.remove(&x);
+          map_duplicates.remove(&x);
         }
       }
 
-      if dups.is_empty() {
+      if map_duplicates.is_empty() {
         tokio::fs::remove_file(path_write).await.ok();
       } else {
         tasks.push(tokio::spawn({
@@ -685,7 +795,9 @@ impl Api {
             FileWriter::builder()
               .filename(Cow::Borrowed(&path_write))
               .build()
-              .write(to_string_pretty(&FileOut { duplicates: dups })?)
+              .write(to_string_pretty(&FileOut {
+                duplicates: Api::dashmap_arc_to_vec(&map_duplicates),
+              })?)
               .await?;
 
             tui_update_tx
@@ -706,6 +818,7 @@ impl Api {
     }
 
     let all_valids = Arc::new(RwLock::new(Vec::<EmailCheckIsValid>::new()));
+    let timeouts_per_domain = Arc::new(DashMap::<CowStr, bool>::new());
 
     for (path_file, state) in file_states {
       let tui_update_tx = tui_update_tx.clone();
@@ -728,12 +841,14 @@ impl Api {
         let tui_update_tx = tui_update_tx.clone();
         let options = options.clone();
         let all_valids = all_valids.clone();
+        let timeouts_per_domain = timeouts_per_domain.clone();
 
         async move {
           Self::process_single_file_write_output(
             path_file,
             &options,
             state_threads.clone(),
+            Some(timeouts_per_domain),
             Some(tui_update_tx),
           )
           .await?;

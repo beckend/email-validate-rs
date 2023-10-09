@@ -16,7 +16,10 @@ pub struct Command {}
 
 impl Command {
   pub async fn execute(options: &CommandOptionsCheckString) -> Result<()> {
-    let (items, items_dup) = Api::get_csv_items(options.input.as_str());
+    let (items, items_dup, items_added) = Api::get_csv_items(
+      options.input.as_str(),
+      options.additional_senders_per_domain.as_ref(),
+    );
 
     if items.is_empty() {
       return Err(anyhow!("input contained no valid emails."));
@@ -29,6 +32,7 @@ impl Command {
 
     Api::process_batch(
       state.clone(),
+      None,
       None,
       options.timeout_seconds,
       options.concurrency,
@@ -66,6 +70,7 @@ impl Command {
 
     let w = [
       format!("{}: {}\n", "Total".blue(), state.count_total),
+      format!("{}: {}\n", "Items added per domain:".blue(), items_added),
       format!("{}: {}\n", "Duplicates".red(), len_duplicates),
       format!("{}: {}\n", "Invalid".red(), len_invalids),
       format!("{}: {}\n", "Timeout".bright_red(), state.timeouts.len()),

@@ -6,27 +6,6 @@ use std::path::Path;
 pub use crate::features::cli::{parsers::Parsers, validators::Validators};
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
-pub struct CommandOptionsFilterByPriority {
-  /// Directory containing .cvs files, it's walked recursively, the emails may be separated by newline, space, coma or semicolon
-  #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path_resolved, required = true)]
-  pub dir_input: Cow<'static, Path>,
-  /// Directory to output {input-file}-timeout.csv {input-file}-invalid.csv {input-file}-valid.csv {input-file}-timing.json
-  #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path, required = true)]
-  pub dir_output: Cow<'static, Path>,
-  #[clap(long, default_value_t = 25_usize)]
-  pub concurrency: usize,
-  /// per item
-  #[clap(
-    long,
-    default_value_t = 120_u64,
-    value_parser = Parsers::parse_duration_above_0
-  )]
-  pub timeout_seconds: u64,
-  #[clap(long, value_delimiter = ',')]
-  pub prefixes: Option<Vec<CowStr>>,
-}
-
-#[derive(Args, Debug, Clone, Eq, PartialEq)]
 pub struct CommandOptionsCheckDir {
   /// Directory containing .cvs files, it's walked recursively, the emails may be separated by newline, space, coma or semicolon
   #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path_resolved, required = true)]
@@ -43,6 +22,8 @@ pub struct CommandOptionsCheckDir {
     value_parser = Parsers::parse_duration_above_0
   )]
   pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub additional_senders_per_domain: Option<Vec<CowStr>>,
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
@@ -62,6 +43,8 @@ pub struct CommandOptionsCheckFile {
     value_parser = Parsers::parse_duration_above_0
   )]
   pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub additional_senders_per_domain: Option<Vec<CowStr>>,
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
@@ -78,6 +61,8 @@ pub struct CommandOptionsCheckString {
     value_parser = Parsers::parse_duration_above_0
   )]
   pub timeout_seconds: u64,
+  #[clap(long, value_delimiter = ',')]
+  pub additional_senders_per_domain: Option<Vec<CowStr>>,
 }
 
 #[derive(Args, Debug, Clone, Eq, PartialEq)]
