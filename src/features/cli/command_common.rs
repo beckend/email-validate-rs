@@ -1,7 +1,7 @@
 use clap::{ArgAction, Args, Parser, Subcommand, ValueHint};
 use cowstr::CowStr;
-use std::borrow::Cow;
 use std::path::Path;
+use std::{borrow::Cow, num::NonZeroUsize};
 
 pub use crate::features::cli::{parsers::Parsers, validators::Validators};
 
@@ -13,8 +13,8 @@ pub struct CommandOptionsCheckDir {
   /// Directory to output {input-file}-timeout.csv {input-file}-invalid.csv {input-file}-valid.csv {input-file}-timing.json
   #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path, required = true)]
   pub dir_output: Cow<'static, Path>,
-  #[clap(long, default_value_t = 25_usize)]
-  pub concurrency: usize,
+  #[clap(long, default_value_t = NonZeroUsize::new(25).unwrap())]
+  pub concurrency: NonZeroUsize,
   /// per item
   #[clap(
     long,
@@ -34,8 +34,8 @@ pub struct CommandOptionsCheckFile {
   /// Directory to output {input-file}-timeout.csv {input-file}-invalid.csv {input-file}-valid.csv {input-file}-timing.json
   #[clap(long, value_hint = ValueHint::DirPath, value_parser = Parsers::path, required = true)]
   pub dir_output: Cow<'static, Path>,
-  #[clap(long, default_value_t = 25_usize)]
-  pub concurrency: usize,
+  #[clap(long, default_value_t = NonZeroUsize::new(25).unwrap())]
+  pub concurrency: NonZeroUsize,
   /// per item
   #[clap(
     long,
@@ -52,8 +52,8 @@ pub struct CommandOptionsCheckString {
   /// separated by space, coma or semicolon
   #[clap(long, required = true)]
   pub input: CowStr,
-  #[clap(long, default_value_t = 25_usize)]
-  pub concurrency: usize,
+  #[clap(long, default_value_t = NonZeroUsize::new(25).unwrap())]
+  pub concurrency: NonZeroUsize,
   /// per item
   #[clap(
     long,

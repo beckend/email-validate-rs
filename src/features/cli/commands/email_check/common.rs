@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use cowstr::CowStr;
 use dashmap::DashMap;
 use email_address_parser::EmailAddress;
-use futures::StreamExt;
+use futures::stream::{self, StreamExt};
 use kanal::AsyncSender;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -11,20 +11,19 @@ use std::{
   borrow::Cow,
   collections::HashMap,
   fmt::Debug,
+  num::NonZeroUsize,
   path::{Path, PathBuf},
   sync::Arc,
   time::Duration,
 };
-use tokio::{
-  fs::OpenOptions,
-  io::{AsyncReadExt, AsyncWriteExt, BufReader},
-  sync::RwLock,
-};
+use tokio::{fs::OpenOptions, sync::RwLock};
 use walkdir::{DirEntry, WalkDir};
 
+use super::tui::{PayloadTUIUpdate, TUIChannelPayload, TUIUpdateDispatch, Tui};
 use crate::{
   features::cli::{
-    command_common::CommandOptionsCheckDir, commands::email_check::tui::PayloadTUIUpdateTotal,
+    command_common::CommandOptionsCheckDir,
+    commands::email_check::tui::{PayloadTUIUpdatePending, PayloadTUIUpdateTotal},
   },
   model::INFALLIBLE,
   modules::{
@@ -32,29 +31,62 @@ use crate::{
     email_check::{EmailCheck, EmailCheckIsValid},
     fs::write::FileWriter,
     logger::Logger,
+    rate_limit::RLimit,
   },
 };
-
-use super::tui::{PayloadTUIUpdate, TUIChannelPayload, TUIUpdateDispatch, Tui};
 
 static LOG: Lazy<slog::Logger> =
   Lazy::new(|| slog::Logger::root(Logger::new().unwrap().drain, slog::o!("command" => "check")));
 
-#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+pub const DOMAIN_EMAIL_PROVIDERS: &[&str] = &[
+  "gmail.com",
+  "outlook.com",
+  "hotmail.com",
+  "yahoo.com",
+  "protonmail.com",
+  "protonmail.ch",
+  "zoho.com",
+  "aim.com",
+  "gxm.us",
+  "googlemail.com",
+  "icloud.com",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CSVRecord {
+  pub email: CowStr,
+  #[serde(default)]
+  pub name: CowStr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CSVRecordParsed {
+  pub email: EmailAddressWrapped,
+  pub email_str: CowStr,
+  pub name: CowStr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailCheckPayload {
+  pub check: EmailCheckIsValid,
+  pub record: CSVRecordParsed,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ItemTimeout {
-  pub address_email: CowStr,
+  pub record: CSVRecordParsed,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
 pub struct SingleFile<'a> {
   pub path: Cow<'a, Path>,
-  pub items: Option<Vec<(EmailAddressWrapped, CowStr)>>,
+  pub items: Option<Vec<CSVRecordParsed>>,
   pub items_duplicates: Option<Vec<CowStr>>,
   pub count_total: usize,
-  pub valids: Vec<EmailCheckIsValid>,
-  pub invalids: Vec<EmailCheckIsValid>,
+  pub valids: Vec<EmailCheckPayload>,
+  pub invalids: Vec<EmailCheckPayload>,
   pub timeouts: Vec<ItemTimeout>,
-  pub timings: Vec<(Duration, EmailCheckIsValid)>,
+  pub timings: Vec<(Duration, EmailCheckPayload)>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,19 +131,107 @@ impl Api {
     )
   }
 
-  // return: first are item, second are duplicates
+  pub async fn get_csv_from_file<TPath: AsRef<Path>>(
+    path: TPath,
+    additional_senders_per_domain: Option<&Vec<CowStr>>,
+  ) -> Result<
+    // 0: list of emails, 1: duplicates, 2: amount of added from additionals
+    (Vec<CSVRecordParsed>, Vec<CowStr>, usize),
+  > {
+    let reader = csv_async::AsyncReaderBuilder::new().create_deserializer(
+      tokio::fs::OpenOptions::new()
+        .create(false)
+        .write(false)
+        .read(true)
+        .open(path.as_ref())
+        .await?,
+    );
+    let map_exists = Arc::new(DashMap::<CowStr, bool>::new());
+
+    let mut returned = reader
+      .into_deserialize::<CSVRecord>()
+      .fold(
+        (Vec::<CSVRecordParsed>::new(), Vec::<CowStr>::new(), 0),
+        |mut acc, x| {
+          let map_exists = map_exists.clone();
+
+          async move {
+            let mut x = x.expect("CSV deserilaize needs 'email' column and optional 'name' column");
+            let email = x.email.clone().trim().to_string();
+            let email_parse = EmailAddress::parse(&email, None);
+            x.email = email.into();
+            x.name = x.name.trim().into();
+
+            if x.email.is_empty() {
+              return acc;
+            }
+
+            let Some(email_parsed) = email_parse else {
+              return acc;
+            };
+
+            if map_exists.contains_key(&x.email) {
+              acc.1.push(x.email);
+              return acc;
+            }
+            map_exists.insert(x.email.clone(), true);
+            acc.0.push(CSVRecordParsed {
+              email: email_parsed.into(),
+              email_str: x.email,
+              name: x.name,
+            });
+
+            acc
+          }
+        },
+      )
+      .await;
+
+    if let Some(adds) = additional_senders_per_domain {
+      // need 2 operations, adding to the current iter is bad
+      let mut add_to_returned =
+        returned
+          .0
+          .iter()
+          .fold((adds, Vec::<CSVRecordParsed>::new()), |mut acc, x| {
+            let domain = x.email.0.get_domain();
+
+            if DOMAIN_EMAIL_PROVIDERS.iter().any(|x| *x == domain) {
+              return acc;
+            }
+
+            for sender in acc.0.iter() {
+              let wanted_email: CowStr = format!("{sender}@{}", domain).into();
+
+              if !map_exists.contains_key(&wanted_email) {
+                acc.1.push(CSVRecordParsed {
+                  email: wanted_email.as_str().into(),
+                  email_str: wanted_email.clone(),
+                  name: wanted_email,
+                });
+                returned.2 += 1;
+              }
+            }
+
+            acc
+          });
+
+      returned.0.append(&mut add_to_returned.1);
+    }
+
+    Ok(returned)
+  }
+
+  // handle CSV with unknown cols and rows, the name is not accounted for and is simply the email part before @
+  // return: first are item, second are duplicates, third is how many emails added by additionals
   pub fn get_csv_items<TInput: AsRef<str>>(
     x: TInput,
     additional_senders_per_domain: Option<&Vec<CowStr>>,
-  ) -> (Vec<(EmailAddressWrapped, CowStr)>, Vec<CowStr>, usize) {
+  ) -> (Vec<CSVRecordParsed>, Vec<CowStr>, usize) {
     let mut map_exists = HashMap::<CowStr, bool>::new();
 
     let mut returned = x.as_ref().split([' ', ',', ';', '\n'].as_ref()).fold(
-      (
-        Vec::<(EmailAddressWrapped, CowStr)>::new(),
-        Vec::<CowStr>::new(),
-        0,
-      ),
+      (Vec::<CSVRecordParsed>::new(), Vec::<CowStr>::new(), 0),
       |mut acc, x| {
         let val = x.trim();
 
@@ -128,7 +248,12 @@ impl Api {
         }
         let v: CowStr = val.into();
         map_exists.insert(v.clone(), true);
-        acc.0.push((email.into(), v));
+        let name = email.get_local_part().into();
+        acc.0.push(CSVRecordParsed {
+          email: email.into(),
+          email_str: v,
+          name,
+        });
 
         acc
       },
@@ -136,21 +261,27 @@ impl Api {
 
     if let Some(adds) = additional_senders_per_domain {
       // need 2 operations, adding to the current iter is bad
-      let mut add_to_returned = returned.0.iter().fold(
-        (adds, Vec::<(EmailAddressWrapped, CowStr)>::new()),
-        |mut acc, unique| {
-          for sender in acc.0.iter() {
-            let wanted_email: CowStr = format!("{sender}@{}", unique.0 .0.get_domain()).into();
-
-            if !map_exists.contains_key(&wanted_email) {
-              acc.1.push((wanted_email.as_str().into(), wanted_email));
-              returned.2 += 1;
+      let mut add_to_returned =
+        returned
+          .0
+          .iter()
+          .fold((adds, Vec::<CSVRecordParsed>::new()), |mut acc, item| {
+            for sender in acc.0.iter() {
+              let wanted_email: CowStr = format!("{sender}@{}", item.email.0.get_domain()).into();
+              let email = EmailAddress::parse(&wanted_email, None).expect(INFALLIBLE);
+              let name = email.get_local_part().into();
+              if !map_exists.contains_key(&wanted_email) {
+                acc.1.push(CSVRecordParsed {
+                  email: email.into(),
+                  email_str: wanted_email,
+                  name,
+                });
+                returned.2 += 1;
+              }
             }
-          }
 
-          acc
-        },
-      );
+            acc
+          });
 
       returned.0.append(&mut add_to_returned.1);
     }
@@ -159,14 +290,22 @@ impl Api {
   }
 
   async fn process_single_item(
-    email_address: (EmailAddressWrapped, CowStr),
+    email_address: CSVRecordParsed,
     state: Arc<RwLock<Option<SingleFile<'_>>>>,
     timeouts_per_domain: Option<Arc<DashMap<CowStr, bool>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
     timeout_seconds: u64,
   ) -> Result<()> {
+    if let Some(tx) = sender_update.as_ref() {
+      tx.send(TUIUpdateDispatch::Pending(PayloadTUIUpdatePending {
+        count_pending: 1,
+      }))
+      .await
+      .expect("sending update count_pending");
+    }
+
     async fn report_err_timeout(
-      email_address: &(EmailAddressWrapped, CowStr),
+      email_address: &CSVRecordParsed,
       state: &Arc<RwLock<Option<SingleFile<'_>>>>,
       sender_update: &Option<AsyncSender<TUIChannelPayload>>,
       timeout_seconds: u64,
@@ -176,14 +315,14 @@ impl Api {
         let state = lock.as_mut().expect("singlefile");
         state.count_total += 1;
         state.timeouts.push(ItemTimeout {
-          address_email: email_address.1.clone(),
+          record: email_address.clone(),
         });
       }
 
       let time_ms_timeout = Duration::from_secs(timeout_seconds);
-      if let Some(tx) = sender_update {
+      if let Some(tx) = sender_update.as_ref() {
         tx.send(TUIUpdateDispatch::Update(PayloadTUIUpdate {
-          email: (email_address.1.clone(), time_ms_timeout, false),
+          email: (email_address.email_str.clone(), time_ms_timeout, false),
           count_invalid: 0,
           count_valid: 0,
           count_timeout: 1,
@@ -195,7 +334,7 @@ impl Api {
     }
 
     if let Some(timeouts_map) = timeouts_per_domain.clone() {
-      if timeouts_map.contains_key(email_address.0 .0.get_domain()) {
+      if timeouts_map.contains_key(email_address.email.0.get_domain()) {
         report_err_timeout(&email_address, &state, &sender_update, timeout_seconds).await;
         return Ok(());
       }
@@ -203,14 +342,14 @@ impl Api {
 
     let fut = {
       let state = state.clone();
-      let email_address = email_address.clone();
+      let record = email_address.clone();
       let sender_update_c = sender_update.clone();
 
       async move {
         let sender_update = sender_update_c;
+
         let t_start = minstant::Instant::now();
-        let t: &str = email_address.1.as_ref();
-        let (result, _) = EmailCheck::check_single(t).await?;
+        let (result, _) = EmailCheck::check_single(record.email_str.as_str()).await?;
 
         let mut lock = state.write().await;
         let state = lock.as_mut().expect("singlefile");
@@ -218,19 +357,23 @@ impl Api {
         let time_duration = t_start.elapsed();
 
         {
+          let payload = EmailCheckPayload {
+            check: result,
+            record: record.clone(),
+          };
           if is_valid {
-            state.valids.push(result.clone());
+            state.valids.push(payload.clone());
           } else {
-            state.invalids.push(result.clone());
+            state.invalids.push(payload.clone());
           }
           state.count_total += 1;
-          state.timings.push((time_duration, result));
+          state.timings.push((time_duration, payload));
         }
         drop(lock);
 
-        if let Some(tx) = sender_update {
+        if let Some(tx) = sender_update.as_ref() {
           tx.send(TUIUpdateDispatch::Update(PayloadTUIUpdate {
-            email: (email_address.1, t_start.elapsed(), is_valid),
+            email: (record.email_str, t_start.elapsed(), is_valid),
             count_total: 1,
             count_invalid: if is_valid { 0 } else { 1 },
             count_valid: if is_valid { 1 } else { 0 },
@@ -248,7 +391,7 @@ impl Api {
 
     if tokio::time::timeout(time_ms_timeout, fut).await.is_err() {
       if let Some(timeouts_map) = timeouts_per_domain {
-        timeouts_map.insert(email_address.0 .0.get_domain().into(), true);
+        timeouts_map.insert(email_address.email.0.get_domain().into(), true);
       }
       report_err_timeout(&email_address, &state, &sender_update, timeout_seconds).await;
     }
@@ -261,7 +404,7 @@ impl Api {
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
     timeouts_per_domain: Option<Arc<DashMap<CowStr, bool>>>,
     timeout_seconds: u64,
-    concurrency: usize,
+    r_limit: Arc<RLimit>,
   ) -> Result<()> {
     let mut s_lock = state.write().await;
     if s_lock.as_ref().expect("singlefile").items.is_none() {
@@ -270,7 +413,8 @@ impl Api {
 
     let state_temp = s_lock.as_mut().expect("singlefile");
     let mut items = state_temp.items.take().unwrap();
-    items.sort_by(|a, b| a.0 .0.get_domain().cmp(b.0 .0.get_domain()));
+    drop(s_lock);
+    items.sort_by(|a, b| a.email.0.get_domain().cmp(b.email.0.get_domain()));
 
     // so the domains are shuffled, the timeouts can be spread across, so when a timeout occurs, the later item will not try to contact that domain
     // if no shuffle, then all items from the same domain are tried in parallell and it's multiple of the same domain times outs which is pointless
@@ -278,16 +422,17 @@ impl Api {
     use rand::thread_rng;
     items.shuffle(&mut thread_rng());
 
-    drop(s_lock);
-
-    let tasks = futures::stream::iter(items.into_iter())
+    let tasks = stream::iter(items)
       .map(|x| {
         let state = state.clone();
         let sender_update = sender_update.clone();
         let timeouts_per_domain = timeouts_per_domain.clone();
+        let r_limit = r_limit.clone();
 
         tokio::spawn({
           async move {
+            r_limit.wait().await;
+
             Self::process_single_item(
               x,
               state,
@@ -295,11 +440,13 @@ impl Api {
               sender_update,
               timeout_seconds,
             )
-            .await
+            .await?;
+
+            r_limit.done().await
           }
         })
       })
-      .buffer_unordered(concurrency)
+      .buffer_unordered(r_limit.limit_per_second.get())
       .collect::<Vec<_>>();
 
     for x in tasks.await {
@@ -315,13 +462,14 @@ impl Api {
     state: Arc<RwLock<Option<SingleFile<'static>>>>,
     timeouts_per_domain: Option<Arc<DashMap<CowStr, bool>>>,
     sender_update: Option<AsyncSender<TUIChannelPayload>>,
+    r_limit: Arc<RLimit>,
   ) -> Result<()> {
     Self::process_batch(
       state.clone(),
       sender_update.clone(),
       timeouts_per_domain,
       options.timeout_seconds,
-      options.concurrency,
+      r_limit,
     )
     .await?;
     Self::write_output_files(sender_update, options, state, path_file).await?;
@@ -334,27 +482,6 @@ impl Api {
     options: &CommandOptionsCheckDir,
     path_file: PathBuf,
   ) -> Result<SingleFile<'a>> {
-    let mut file = BufReader::new(
-      OpenOptions::new()
-        .create(false)
-        .write(false)
-        .read(true)
-        .open(&path_file)
-        .await?,
-    );
-
-    let mut path_file_no_base = path_file
-      .clone()
-      .as_os_str()
-      .to_string_lossy()
-      .replace(options.dir_input.as_os_str().to_string_lossy().as_ref(), "");
-
-    // remove the first slash
-    path_file_no_base.remove(0);
-
-    let mut content = String::new();
-    file.read_to_string(&mut content).await?;
-
     if let Some(tx) = sender_update.clone() {
       tx.send(TUIUpdateDispatch::MessageMain(
         format!("Path: {}\n", path_file.display()).into(),
@@ -364,7 +491,7 @@ impl Api {
     }
 
     let (items, items_duplicates, items_added) =
-      Self::get_csv_items(&content, options.additional_senders_per_domain.as_ref());
+      Self::get_csv_from_file(&path_file, options.additional_senders_per_domain.as_ref()).await?;
 
     if items_added != 0 {
       if let Some(tx) = sender_update {
@@ -459,10 +586,12 @@ impl Api {
 
         let mut buf_writer = Self::get_file_writer(&path_write).await?;
 
-        Self::write_bytes_to_file(&mut buf_writer, "email\n".as_bytes()).await?;
-
         for x in items.into_iter() {
-          Self::write_bytes_to_file(&mut buf_writer, format!("{}\n", x.address_email).as_bytes())
+          buf_writer
+            .serialize(CSVRecord {
+              email: x.record.email_str,
+              name: x.record.name,
+            })
             .await?;
         }
 
@@ -502,7 +631,7 @@ impl Api {
         async move {
           #[derive(Serialize)]
           struct Item {
-            pub data: EmailCheckIsValid,
+            pub data: EmailCheckPayload,
             pub time_process: Duration,
           }
 
@@ -555,15 +684,29 @@ impl Api {
         let sender_update = sender_update.clone();
 
         async move {
-          state_c
-            .timeouts
-            .sort_by(|a, b| b.address_email.cmp(&a.address_email));
+          state_c.timeouts.sort_by(|a, b| {
+            a.record
+              .email
+              .0
+              .get_domain()
+              .cmp(b.record.email.0.get_domain())
+              .then(
+                a.record
+                  .email
+                  .0
+                  .get_local_part()
+                  .cmp(b.record.email.0.get_local_part()),
+              )
+          });
 
           let mut buf_writer = Self::get_file_writer(&path_write).await?;
-          Self::write_bytes_to_file(&mut buf_writer, "email\n".as_bytes()).await?;
 
           for x in state_c.timeouts.into_iter() {
-            Self::write_bytes_to_file(&mut buf_writer, format!("{}\n", x.address_email).as_bytes())
+            buf_writer
+              .serialize(CSVRecord {
+                email: x.record.email_str,
+                name: x.record.name,
+              })
               .await?;
           }
 
@@ -603,16 +746,11 @@ impl Api {
 
   async fn get_file_writer<TPathFile: AsRef<Path>>(
     path_file: TPathFile,
-  ) -> Result<tokio::io::BufWriter<tokio::fs::File>> {
-    use tokio::{
-      fs,
-      io::{self},
-    };
-
+  ) -> Result<csv_async::AsyncSerializer<tokio::fs::File>> {
     let path_file = path_file.as_ref();
 
     if let Some(parent) = path_file.parent() {
-      fs::create_dir_all(parent).await?;
+      tokio::fs::create_dir_all(parent).await?;
     } else {
       return Err(anyhow::anyhow!("failed to get parent directory."));
     }
@@ -623,14 +761,12 @@ impl Api {
       .truncate(true)
       .open(&path_file)
       .await?;
-    Ok(io::BufWriter::new(file))
-  }
-
-  async fn write_bytes_to_file<TData: AsRef<[u8]>>(
-    file: &mut tokio::io::BufWriter<tokio::fs::File>,
-    data: TData,
-  ) -> Result<usize> {
-    file.write(data.as_ref()).await.map_err(anyhow::Error::new)
+    Ok(
+      csv_async::AsyncWriterBuilder::new()
+        .delimiter(b';')
+        .has_headers(true)
+        .create_serializer(file),
+    )
   }
 
   pub async fn do_handle_directory_recursive(
@@ -645,14 +781,9 @@ impl Api {
 
     // the key is the email the vec contains file paths
     let map_duplicates = Arc::new(DashMap::<CowStr, Vec<CowStr>>::new());
-    let (tui_update_tx, tui_update_rx) = Tui::new_channels(options.concurrency);
+    let (tui_update_tx, tui_update_rx) = Tui::new_channels(NonZeroUsize::new(10000).unwrap());
 
     let mut tasks = Vec::new();
-
-    let task_tui_update = tokio::spawn({
-      let tui_update_rx = tui_update_rx.clone();
-      async move { Tui::execute(tui_update_rx).await }
-    });
 
     let task_tui_update_timer = tokio::spawn({
       let tui_update_tx = tui_update_tx.clone();
@@ -720,8 +851,8 @@ impl Api {
 
             if let Some(items) = state.items.as_mut() {
               items.retain(|item| {
-                if map_duplicates.contains_key(&item.1) {
-                  let mut path_dups = map_duplicates.get_mut(&item.1).expect(INFALLIBLE);
+                if map_duplicates.contains_key(&item.email_str) {
+                  let mut path_dups = map_duplicates.get_mut(&item.email_str).expect(INFALLIBLE);
 
                   if !path_dups.contains(&path_file_str) {
                     path_dups.push(path_file_str.clone());
@@ -730,7 +861,7 @@ impl Api {
                   return false;
                 }
 
-                map_duplicates.insert(item.1.clone(), vec![path_file_str.clone()]);
+                map_duplicates.insert(item.email_str.clone(), vec![path_file_str.clone()]);
 
                 true
               });
@@ -817,8 +948,14 @@ impl Api {
       }
     }
 
-    let all_valids = Arc::new(RwLock::new(Vec::<EmailCheckIsValid>::new()));
+    let task_tui_update = tokio::spawn({
+      let tui_update_rx = tui_update_rx.clone();
+      async move { Tui::execute(tui_update_rx).await }
+    });
+
+    let all_valids = Arc::new(RwLock::new(Vec::<EmailCheckPayload>::new()));
     let timeouts_per_domain = Arc::new(DashMap::<CowStr, bool>::new());
+    let r_limit = Arc::new(RLimit::new(options.concurrency)?);
 
     for (path_file, state) in file_states {
       let tui_update_tx = tui_update_tx.clone();
@@ -842,6 +979,7 @@ impl Api {
         let options = options.clone();
         let all_valids = all_valids.clone();
         let timeouts_per_domain = timeouts_per_domain.clone();
+        let r_limit = r_limit.clone();
 
         async move {
           Self::process_single_file_write_output(
@@ -850,6 +988,7 @@ impl Api {
             state_threads.clone(),
             Some(timeouts_per_domain),
             Some(tui_update_tx),
+            r_limit,
           )
           .await?;
 
@@ -882,18 +1021,28 @@ impl Api {
       let mut items = lock.drain(..).collect::<Vec<_>>();
       drop(lock);
       items.sort_by(|a, b| {
-        a.email
+        a.record
+          .email
           .0
           .get_domain()
-          .cmp(b.email.0.get_domain())
-          .then(a.email.0.get_local_part().cmp(b.email.0.get_local_part()))
+          .cmp(b.record.email.0.get_domain())
+          .then(
+            a.record
+              .email
+              .0
+              .get_local_part()
+              .cmp(b.record.email.0.get_local_part()),
+          )
       });
 
       let mut buf_writer = Self::get_file_writer(&path_write_all_valids).await?;
-      Self::write_bytes_to_file(&mut buf_writer, "email\n".as_bytes()).await?;
 
       for x in items.into_iter() {
-        Self::write_bytes_to_file(&mut buf_writer, format!("{}\n", x.address_email).as_bytes())
+        buf_writer
+          .serialize(CSVRecord {
+            email: x.record.email_str,
+            name: x.record.name,
+          })
           .await?;
       }
 
@@ -916,7 +1065,7 @@ impl Api {
       "All valids written to: {}\n",
       path_write_all_valids
         .canonicalize()
-        .expect("canonicalize")
+        .expect("canonicalize>")
         .display(),
     );
 

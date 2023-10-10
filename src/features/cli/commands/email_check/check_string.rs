@@ -6,9 +6,10 @@ use tokio::sync::RwLock;
 use super::common::Api;
 use crate::{
   features::cli::{
-    command_common::CommandOptionsCheckString, commands::email_check::common::SingleFile,
+    command_common::CommandOptionsCheckString,
+    commands::email_check::common::{EmailCheckPayload, SingleFile},
   },
-  modules::email_check::EmailCheckIsValid,
+  modules::rate_limit::RLimit,
 };
 
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ impl Command {
       None,
       None,
       options.timeout_seconds,
-      options.concurrency,
+      Arc::new(RLimit::new(options.concurrency)?),
     )
     .await?;
 
@@ -48,7 +49,7 @@ impl Command {
 
     fn get_list_email<I>(x: I, label: &ColoredString) -> String
     where
-      I: Iterator<Item = EmailCheckIsValid>,
+      I: Iterator<Item = EmailCheckPayload>,
     {
       format!(
         "\n{}",
@@ -56,10 +57,10 @@ impl Command {
           "\n{label}: {list}",
           list = x.fold("".into(), |mut acc: String, item| {
             acc += "\n";
-            acc += item.address_email.as_ref();
+            acc += item.record.email_str.as_ref();
 
-            if !item.reasons_failure.is_empty() {
-              acc += item.reasons_failure.join(", ").as_str()
+            if !item.check.reasons_failure.is_empty() {
+              acc += item.check.reasons_failure.join(", ").as_str()
             }
 
             acc
@@ -110,7 +111,7 @@ impl Command {
               .into_iter()
               .fold("".into(), |mut acc: String, item| {
                 acc += "\n";
-                acc += item.address_email.as_ref();
+                acc += item.record.email_str.as_ref();
 
                 acc
               })

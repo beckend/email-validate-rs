@@ -12,6 +12,7 @@ use ratatui::{prelude::*, widgets::*};
 use std::{
   collections::VecDeque,
   io::{self},
+  num::NonZeroUsize,
   time::Duration,
 };
 
@@ -19,17 +20,23 @@ const LIMIT_EMAILS: usize = 10_usize;
 type Term = Terminal<CrosstermBackend<io::Stdout>>;
 
 pub enum TUIUpdateDispatch {
-  TimeElapsed(FormattedDuration),
-  Update(PayloadTUIUpdate),
   MessageMain(CowStr),
+  Pending(PayloadTUIUpdatePending),
+  TimeElapsed(FormattedDuration),
   Total(PayloadTUIUpdateTotal),
   TotalFilesWritten(PayloadTUIUpdateFilesWritten),
+  Update(PayloadTUIUpdate),
 }
 
 #[derive(Debug, Clone)]
 pub struct PayloadTUIUpdateTotal {
   pub count_total: usize,
   pub count_files_total: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PayloadTUIUpdatePending {
+  pub count_pending: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +67,7 @@ pub struct Tui {
   pub count_files_total_processed: usize,
 
   pub count_total: usize,
+  pub count_pending: usize,
   pub count_total_processed: usize,
 
   pub count_invalid: usize,
@@ -80,12 +88,12 @@ impl Tui {
   }
 
   pub fn new_channels(
-    limit: usize,
+    limit: NonZeroUsize,
   ) -> (
     AsyncSender<TUIChannelPayload>,
     AsyncReceiver<TUIChannelPayload>,
   ) {
-    kanal::bounded_async(limit)
+    kanal::bounded_async(limit.get() as usize)
   }
 }
 
@@ -136,21 +144,16 @@ impl Tui {
       tokio::select! {
           Ok(action) = rx_update.recv() => {
            match action {
-            TUIUpdateDispatch::TimeElapsed(x) => {
-              self.time_elapsed = Some(x);
-            }
-
-            TUIUpdateDispatch::Update(update) => {
-              limit_email(&mut self.emails);
-              self.emails.push_front(update.email);
-              self.count_timeout += update.count_timeout;
-              self.count_invalid += update.count_invalid;
-              self.count_valid += update.count_valid;
-              self.count_total_processed += update.count_total;
-            }
-
             TUIUpdateDispatch::MessageMain(update) => {
               self.message_main += update;
+            }
+
+            TUIUpdateDispatch::Pending(x) => {
+              self.count_pending += x.count_pending;
+            }
+
+            TUIUpdateDispatch::TimeElapsed(x) => {
+              self.time_elapsed = Some(x);
             }
 
             TUIUpdateDispatch::Total(update) => {
@@ -160,6 +163,16 @@ impl Tui {
 
             TUIUpdateDispatch::TotalFilesWritten(update) => {
               self.count_files_total_processed += update.count_total;
+            }
+
+            TUIUpdateDispatch::Update(update) => {
+              limit_email(&mut self.emails);
+              self.emails.push_front(update.email);
+              self.count_timeout += update.count_timeout;
+              self.count_invalid += update.count_invalid;
+              self.count_valid += update.count_valid;
+              self.count_total_processed += update.count_total;
+              self.count_pending -= 1;
             }
           }
 
@@ -222,12 +235,13 @@ impl Tui {
 
     f.render_widget(
       Paragraph::new(format!(
-        "{time_elapsed}\nFiles: {files}   FilesDone: {files_processed}   Total: {total}   Done: {done}   Timeout: {timeout}   Invalid: {invalid}   Valid: {valid}\nRemaining: {items_remaining}",
+        "{time_elapsed}\nFiles: {files}   FilesDone: {files_processed}   Total: {total}   Done: {done}   Timeout: {timeout}   Invalid: {invalid}   Valid: {valid}\nPending: {items_pending}   Remaining: {items_remaining}",
         time_elapsed = self.time_elapsed.clone().unwrap_or_else(|| humantime::format_duration(Duration::new(0, 0))),
         files = self.count_files_total,
         files_processed = self.count_files_total_processed,
         total = self.count_total,
         done = self.count_total_processed,
+        items_pending = self.count_pending,
         items_remaining = self.count_total - self.count_total_processed,
         timeout = self.count_timeout,
         invalid = self.count_invalid,
